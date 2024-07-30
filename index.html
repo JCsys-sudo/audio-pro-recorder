@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioPro Recorder</title>
+    <style>
+        #controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 300px;
+            margin: 20px auto;
+        }
+        #controls button, #controls input, #controls textarea {
+            padding: 10px;
+        }
+        #audioList {
+            margin-top: 20px;
+            list-style-type: none;
+            padding: 0;
+        }
+        #audioList li {
+            margin-bottom: 10px;
+        }
+        #timer {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .recording-indicator {
+            background-color: red;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>AudioPro Recorder</h1>
+    <div id="controls">
+        <select name="listaDeDispositivos" id="listaDeDispositivos"></select>
+        <br><br>
+        <p id="duracion"></p>
+        <button id="recordButton" onclick="toggleRecording()">Iniciar Grabación</button>
+        <button id="stopButton" disabled onclick="stopRecording()">Detener Grabación</button>
+        <button id="pauseButton" disabled onclick="pauseRecording()">Pausar Grabación</button>
+        <button id="resumeButton" disabled onclick="resumeRecording()">Reanudar Grabación</button>
+        <button onclick="downloadAllRecordings()">Descargar Todas las Grabaciones</button>
+        <label for="volumeControl">Control de Volumen:</label>
+        <input type="range" id="volumeControl" min="0" max="1" step="0.1" value="1" onchange="setVolume(this.value)">
+        <label for="fileName">Nombre del Archivo:</label>
+        <input type="text" id="fileName" placeholder="Nombre del archivo" />
+        <div id="timer">00:00</div>
+        <ul id="audioList"></ul>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+    <script src="https://unpkg.com/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioElement;
+        let recordedAudioURL;
+        let timerInterval;
+        let startTime;
+        let isPaused = false;
+        let pauseTime = 0;
+
+        async function initAudioDevices() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    recordedAudioURL = URL.createObjectURL(audioBlob);
+                    audioElement = new Audio(recordedAudioURL);
+                    audioElement.controls = true;
+
+                    const listItem = document.createElement('li');
+                    const fileName = document.getElementById('fileName').value || `grabacion_${new Date().toISOString()}`;
+                    listItem.innerHTML = `
+                        <audio controls src="${recordedAudioURL}"></audio>
+                        <a href="#" onclick="downloadRecording('${recordedAudioURL}', '${fileName}', 'wav')">Descargar WAV</a>
+                        <button onclick="deleteRecording('${recordedAudioURL}')">Eliminar</button>
+                    `;
+                    document.getElementById('audioList').appendChild(listItem);
+
+                    audioChunks = [];
+                };
+
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioInputDevices = devices.filter(device => device.kind === 'audioinput');
+                const selectElement = document.getElementById('listaDeDispositivos');
+                audioInputDevices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Micrófono ${selectElement.length + 1}`;
+                    selectElement.appendChild(option);
+                });
+
+            } catch (err) {
+                console.error('Error al acceder al micrófono: ', err);
+                alert('No se pudo acceder al micrófono. Por favor, verifica los permisos.');
+            }
+        }
+
+        function toggleRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                startRecording();
+            } else if (mediaRecorder && mediaRecorder.state === 'recording') {
+                pauseRecording();
+            } else if (mediaRecorder && mediaRecorder.state === 'paused') {
+                resumeRecording();
+            }
+        }
+
+        function startRecording() {
+            audioChunks = [];
+            mediaRecorder.start();
+            document.getElementById('recordButton').textContent = 'Pausar Grabación';
+            document.getElementById('recordButton').classList.add('recording-indicator');
+            document.getElementById('stopButton').disabled = false;
+            document.getElementById('pauseButton').disabled = false;
+            document.getElementById('resumeButton').disabled = true;
+            startTime = Date.now();
+            timerInterval = setInterval(updateTimer, 1000);
+
+            notify('Grabación iniciada');
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+            document.getElementById('recordButton').textContent = 'Iniciar Grabación';
+            document.getElementById('recordButton').classList.remove('recording-indicator');
+            document.getElementById('stopButton').disabled = true;
+            document.getElementById('pauseButton').disabled = true;
+            document.getElementById('resumeButton').disabled = true;
+            clearInterval(timerInterval);
+            document.getElementById('timer').textContent = '00:00';
+
+            notify('Grabación detenida');
+        }
+
+        function pauseRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.pause();
+                isPaused = true;
+                pauseTime = Date.now();
+                document.getElementById('recordButton').textContent = 'Reanudar Grabación';
+                document.getElementById('pauseButton').disabled = true;
+                document.getElementById('resumeButton').disabled = false;
+                clearInterval(timerInterval);
+
+                notify('Grabación pausada');
+            }
+        }
+
+        function resumeRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'paused') {
+                mediaRecorder.resume();
+                isPaused = false;
+                startTime += (Date.now() - pauseTime);
+                document.getElementById('recordButton').textContent = 'Pausar Grabación';
+                document.getElementById('pauseButton').disabled = false;
+                document.getElementById('resumeButton').disabled = true;
+                timerInterval = setInterval(updateTimer, 1000);
+
+                notify('Grabación reanudada');
+            }
+        }
+
+        function updateTimer() {
+            if (!isPaused) {
+                const elapsed = Date.now() - startTime;
+                const minutes = Math.floor(elapsed / 60000);
+                const seconds = Math.floor((elapsed % 60000) / 1000);
+                document.getElementById('timer').textContent = `${minutes < 10 ? '0' : ''}${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+            }
+        }
+
+        function setVolume(value) {
+            if (audioElement) {
+                audioElement.volume = value;
+            }
+        }
+
+        function notify(message) {
+            const tooltip = document.createElement('div');
+            tooltip.textContent = message;
+            tooltip.classList.add('tooltip');
+            document.body.appendChild(tooltip);
+            setTimeout(() => {
+                document.body.removeChild(tooltip);
+            }, 3000);
+        }
+
+        function downloadRecording(url, filename, extension) {
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = `${filename}.${extension}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function deleteRecording(url) {
+            const listItem = Array.from(document.querySelectorAll('#audioList li')).find(item => item.querySelector('audio').src === url);
+            if (listItem) {
+                document.getElementById('audioList').removeChild(listItem);
+            }
+        }
+
+        async function downloadAllRecordings() {
+            const zip = new JSZip();
+            const audioItems = document.querySelectorAll('#audioList li');
+            const promises = Array.from(audioItems).map(async (item, index) => {
+                const audioElement = item.querySelector('audio');
+                const fileName = document.getElementById('fileName').value || `grabacion_${index + 1}`;
+                const audioSrc = audioElement.src;
+                const response = await fetch(audioSrc);
+                const blob = await response.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+                zip.file(`${fileName}_${index + 1}.wav`, arrayBuffer);
+            });
+
+            await Promise.all(promises);
+
+            zip.generateAsync({ type: 'blob' }).then(content => {
+                const zipFile = URL.createObjectURL(content);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = zipFile;
+                a.download = 'grabaciones.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', initAudioDevices);
+    </script>
+</body>
+</html>
